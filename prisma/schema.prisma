@@ -1,0 +1,122 @@
+// 1. ตั้งค่าการเชื่อมต่อ
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 2. ตารางผู้ใช้งาน (เจ้าของธุรกิจ)
+// รองรับ SaaS ในอนาคต 1 user = 1 บริษัท
+model User {
+  id          String   @id @default(uuid()) // ใช้ ID แบบตัวอักษรยาวๆ (UUID) ปลอดภัยกว่า
+  email       String   @unique
+  password    String   // เก็บพาสเวิร์ด (ที่เข้ารหัสแล้ว)
+  
+  // ข้อมูลธุรกิจที่จะโชว์ในหัวกระดาษ
+  businessName    String?  // ชื่อบริษัทผู้ขาย
+  taxId           String?  // เลขผู้เสียภาษี
+  address         String?  // ที่อยู่
+  phone           String?
+  logoUrl         String?  // ลิงก์เก็บรูปโลโก้
+  signatureUrl    String?  // ลิงก์เก็บรูปลายเซ็น
+  
+  // ความสัมพันธ์
+  customers   Customer[]
+  documents   Document[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// 3. ตารางลูกค้า (CRM ย่อมๆ)
+model Customer {
+  id          String   @id @default(uuid())
+  companyName String   // ชื่อบริษัทลูกค้า
+  taxId       String?  // เลขผู้เสียภาษีลูกค้า (สำคัญมากสำหรับใบกำกับภาษี)
+  branch      String?  @default("สำนักงานใหญ่") // สาขา
+  address     String?
+  contactPerson String? // ชื่อผู้ติดต่อ
+  email       String?
+  phone       String?
+  
+  userId      String    // ลูกค้าของใคร? (แยกข้อมูลลูกค้าของแต่ละ User ไม่ให้ปนกัน)
+  user        User      @relation(fields: [userId], references: [id])
+  documents   Document[]
+
+  createdAt   DateTime @default(now())
+}
+
+// 4. ตารางเอกสาร (หัวใจหลัก)
+// เก็บทั้ง QT, IV, RE ในตารางเดียว โดยแยกด้วย type
+model Document {
+  id          String        @id @default(uuid())
+  docNo       String        // เลขที่เอกสาร เช่น QT-2026-001, IV-2026-055
+  type        DocumentType  // ประเภทเอกสาร (ENUM)
+  status      DocumentStatus @default(DRAFT) // สถานะเอกสาร
+  
+  date        DateTime      @default(now()) // วันที่เอกสาร
+  dueDate     DateTime?     // วันครบกำหนดชำระ (Credit Term)
+  
+  // ข้อมูลลูกค้า ณ วันที่ออกเอกสาร (Snapshot)
+  // ต้อง copy มาเก็บไว้ด้วย กันกรณีลูกค้าเปลี่ยนชื่อบริษัททีหลัง เอกสารเก่าต้องไม่เปลี่ยนตาม
+  clientName      String
+  clientAddress   String?
+  clientTaxId     String?
+  
+  // การคำนวณเงิน
+  subtotal        Float     // ราคารวมก่อนภาษี
+  discount        Float     @default(0) // ส่วนลดรวม
+  vatRate         Float     @default(7) // อัตราภาษี (7%)
+  vatAmount       Float     // มูลค่าภาษี
+  grandTotal      Float     // ยอดสุทธิ
+  withholdingTax  Float     @default(0) // หัก ณ ที่จ่าย (เผื่อลูกค้าขอหัก 3%)
+
+  notes           String?   // หมายเหตุท้ายเอกสาร
+  terms           String?   // เงื่อนไขการชำระเงิน
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  
+  customerId  String?     // เชื่อมกับตารางลูกค้า (เผื่อดึงประวัติ)
+  customer    Customer?   @relation(fields: [customerId], references: [id])
+  
+  items       DocumentItem[] // รายการสินค้า
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // ป้องกันเลขซ้ำใน User คนเดียวกัน
+  @@unique([userId, docNo])
+}
+
+// 5. ตารางรายการสินค้าในเอกสาร
+model DocumentItem {
+  id          String   @id @default(uuid())
+  description String   // รายละเอียดสินค้า
+  quantity    Int      @default(1)
+  price       Float    // ราคาต่อหน่วย
+  total       Float    // ราคารวม (qty * price)
+  
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+// ตัวเลือกประเภทเอกสาร
+enum DocumentType {
+  QUOTATION      // ใบเสนอราคา
+  INVOICE        // ใบแจ้งหนี้
+  TAX_INVOICE    // ใบกำกับภาษี
+  RECEIPT        // ใบเสร็จรับเงิน
+}
+
+// ตัวเลือกสถานะเอกสาร
+enum DocumentStatus {
+  DRAFT      // ร่าง
+  SENT       // ส่งแล้ว
+  PAID       // จ่ายแล้ว
+  CANCELLED  // ยกเลิก
+  OVERDUE    // เกินกำหนด
+}
